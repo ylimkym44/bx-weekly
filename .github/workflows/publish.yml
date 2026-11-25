@@ -1,0 +1,67 @@
+name: Publish BX Weekly
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish.yml', 'BX-Weekly-pages.zip']
+  schedule:
+    - cron: '17 0,2,6 * * 1'
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: github-pages
+    steps:
+      - name: Prepare public edition and images
+        shell: python
+        run: |
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import urlsplit, urljoin
+          from urllib.request import urlopen, Request
+          import re
+          source = 'https://bx-weekly-journal.yelimkim.chatgpt.site'
+          public = 'https://ylimkym44.github.io/bx-weekly'
+          root = Path('public')
+          queue = ['/', '/issues/']
+          seen = set()
+          class Links(HTMLParser):
+              def handle_starttag(self, tag, attrs):
+                  for key, value in attrs:
+                      if key in ('src', 'href') and value:
+                          link = urlsplit(urljoin(source + current, value))
+                          if link.netloc == urlsplit(source).netloc and link.path.startswith(('/issues/', '/assets/')):
+                              queue.append(link.path)
+          while queue:
+              current = queue.pop(0)
+              if current in seen:
+                  continue
+              seen.add(current)
+              if not re.fullmatch(r'/[A-Za-z0-9_./-]*', current) or '..' in current.split('/'):
+                  raise ValueError(current)
+              with urlopen(Request(source + current, headers={'User-Agent':'BX-Weekly-Publisher/1.0'}), timeout=40) as response:
+                  data = response.read()
+              dest = root / current.lstrip('/')
+              if current.endswith('/'):
+                  dest = dest / 'index.html'
+                  page = data.decode('utf-8')
+                  if 'BX Weekly' not in page:
+                      raise ValueError('Unexpected publication at ' + current)
+                  Links().feed(page)
+                  page = re.sub(r'((?:href|src|content)=")/(?!/)', r'\1/bx-weekly/', page)
+                  data = page.replace(source, public).encode('utf-8')
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              dest.write_bytes(data)
+          if not any(p.startswith('/assets/') for p in seen) or len(list((root/'issues').glob('*/index.html'))) == 0:
+              raise ValueError('Incomplete edition')
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - uses: actions/deploy-pages@v4
